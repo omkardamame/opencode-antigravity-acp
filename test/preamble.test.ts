@@ -93,11 +93,18 @@ const assistant = (value: string, acp = false): LanguageModelV3Prompt[number] =>
   providerOptions: acp ? { [ACP_PROVIDER_ID]: { acp: true } } : undefined,
 })
 
-function mockBridge(onSetModel?: () => void) {
-  const storage = new Map<string, string>()
-  const prompts: { id: string; blocks: readonly AcpContentBlock[] }[] = []
-  const newSessions: string[] = []
-  const resumeAttempts: string[] = []
+interface SharedBridgeState {
+  storage?: Map<string, string>
+  prompts?: { id: string; blocks: readonly AcpContentBlock[] }[]
+  newSessions?: string[]
+  resumeAttempts?: string[]
+}
+
+function mockBridge(onSetModel?: () => void, shared?: SharedBridgeState) {
+  const storage = shared?.storage ?? new Map<string, string>()
+  const prompts = shared?.prompts ?? []
+  const newSessions = shared?.newSessions ?? []
+  const resumeAttempts = shared?.resumeAttempts ?? []
   const preambleReads: string[] = []
   const warmInstalled = Promise.withResolvers<void>()
   let exit: () => void = () => {}
@@ -303,4 +310,147 @@ test("successful resume does not resend; failed resume prepends to the replaceme
   } finally {
     await bridge.disposeAll()
   }
+})
+
+test("delivered then reload does not resend the preamble", async () => {
+  writeFileSync(preamblePath, "preamble")
+  const shared: Required<SharedBridgeState> = {
+    storage: new Map<string, string>(),
+    prompts: [],
+    newSessions: [],
+    resumeAttempts: [],
+  }
+  const first = mockBridge(undefined, shared)
+  try {
+    await first.bridge.setCodeMode(sessionID, false)
+    await first.send([user("first")])
+  } finally {
+    await first.bridge.disposeAll()
+  }
+
+  const reloaded = mockBridge(undefined, shared)
+  try {
+    await reloaded.send([user("after reload")])
+  } finally {
+    await reloaded.bridge.disposeAll()
+  }
+
+  expect(shared.newSessions).toEqual(["agy-1"])
+  expect(shared.resumeAttempts).toEqual(["agy-1"])
+  expect(shared.prompts).toEqual([
+    { id: "agy-1", blocks: [text("preamble"), text("first")] },
+    { id: "agy-1", blocks: [text("after reload")] },
+  ])
+})
+
+test("warm start, reload, then first prompt sends the preamble once", async () => {
+  writeFileSync(preamblePath, "preamble")
+  const shared: Required<SharedBridgeState> = {
+    storage: new Map<string, string>(),
+    prompts: [],
+    newSessions: [],
+    resumeAttempts: [],
+  }
+  const first = mockBridge(undefined, shared)
+  try {
+    await first.bridge.setCodeMode(sessionID, false)
+    await first.bridge.warmSession(sessionID)
+    await first.warmInstalled
+  } finally {
+    await first.bridge.disposeAll()
+  }
+
+  const reloaded = mockBridge(undefined, shared)
+  try {
+    await reloaded.send([user("first after reload")])
+    await reloaded.send([user("second after reload")])
+  } finally {
+    await reloaded.bridge.disposeAll()
+  }
+
+  expect(shared.newSessions).toEqual(["agy-1"])
+  expect(shared.resumeAttempts).toEqual(["agy-1"])
+  expect(shared.prompts).toEqual([
+    { id: "agy-1", blocks: [text("preamble"), text("first after reload")] },
+    { id: "agy-1", blocks: [text("second after reload")] },
+  ])
+})
+
+test("new acpSessionId after model switch sends the preamble once again across reload", async () => {
+  writeFileSync(preamblePath, "preamble")
+  const shared: Required<SharedBridgeState> = {
+    storage: new Map<string, string>(),
+    prompts: [],
+    newSessions: [],
+    resumeAttempts: [],
+  }
+  const first = mockBridge(undefined, shared)
+  try {
+    await first.bridge.setCodeMode(sessionID, false)
+    await first.send([user("first")])
+  } finally {
+    await first.bridge.disposeAll()
+  }
+
+  const afterSwitch = mockBridge(undefined, shared)
+  try {
+    await afterSwitch.send([user("first"), assistant("Other model reply"), user("switched back")])
+    await afterSwitch.send([user("follow-up")])
+  } finally {
+    await afterSwitch.bridge.disposeAll()
+  }
+
+  const reloadedAgain = mockBridge(undefined, shared)
+  try {
+    await reloadedAgain.send([user("after second reload")])
+  } finally {
+    await reloadedAgain.bridge.disposeAll()
+  }
+
+  expect(shared.newSessions).toEqual(["agy-1", "agy-2"])
+  expect(shared.resumeAttempts).toEqual(["agy-2"])
+  expect(shared.prompts[0]).toEqual({ id: "agy-1", blocks: [text("preamble"), text("first")] })
+  expect(shared.prompts[1].id).toBe("agy-2")
+  expect(shared.prompts[1].blocks).toEqual([
+    text("preamble"),
+    expect.objectContaining({ text: expect.stringContaining("[Historical assistant]: Other model reply") }),
+    text("switched back"),
+  ])
+  expect(shared.prompts[2]).toEqual({ id: "agy-2", blocks: [text("follow-up")] })
+  expect(shared.prompts[3]).toEqual({ id: "agy-2", blocks: [text("after second reload")] })
+})
+
+test("warm start and reload remain unaffected when preamble is off or file is missing", async () => {
+  const runCase = async () => {
+    const shared: Required<SharedBridgeState> = {
+      storage: new Map<string, string>(),
+      prompts: [],
+      newSessions: [],
+      resumeAttempts: [],
+    }
+    const first = mockBridge(undefined, shared)
+    try {
+      await first.bridge.setCodeMode(sessionID, false)
+      await first.bridge.warmSession(sessionID)
+      await first.warmInstalled
+    } finally {
+      await first.bridge.disposeAll()
+    }
+    const reloaded = mockBridge(undefined, shared)
+    try {
+      await reloaded.send([user("hello")])
+    } finally {
+      await reloaded.bridge.disposeAll()
+    }
+    expect(shared.resumeAttempts).toEqual(["agy-1"])
+    return shared.prompts
+  }
+
+  // Missing file
+  expect(await runCase()).toEqual([{ id: "agy-1", blocks: [text("hello")] }])
+
+  // Populated file with ANTIGRAVITY_ACP_PREAMBLE=off
+  writeFileSync(preamblePath, "preamble")
+  process.env.ANTIGRAVITY_ACP_PREAMBLE = "off"
+  expect(await runCase()).toEqual([{ id: "agy-1", blocks: [text("hello")] }])
 })

@@ -201,6 +201,7 @@ interface WarmSpare {
 }
 
 const STORAGE_KEY_PREFIX = "antigravity-acp:session:"
+const PREAMBLE_STORAGE_KEY_PREFIX = "antigravity-acp:preamble:"
 const COOLDOWN_STORAGE_KEY = "antigravity-acp:cooldown"
 const MODEL_CATALOG_STORAGE_KEY = "antigravity-acp:model-catalog:v1"
 const MODEL_CATALOG_TTL_MS = 6 * 60 * 60 * 1000
@@ -1300,6 +1301,28 @@ export class SessionBridgeManager {
     try {
       await Effect.runPromise(this.ctx.storage.remove(`${STORAGE_KEY_PREFIX}${sessionID}`))
     } catch {}
+    try {
+      await Effect.runPromise(this.ctx.storage.remove(`${PREAMBLE_STORAGE_KEY_PREFIX}${sessionID}`))
+    } catch {}
+  }
+
+  private async runPreambleDeliveredGet(sessionID: string): Promise<string | undefined> {
+    try {
+      const val = await Effect.runPromise(
+        this.ctx.storage.get(`${PREAMBLE_STORAGE_KEY_PREFIX}${sessionID}`),
+      )
+      return typeof val === "string" && val.length > 0 ? val : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private async runPreambleDeliveredSet(sessionID: string, acpSessionId: string): Promise<void> {
+    try {
+      await Effect.runPromise(
+        this.ctx.storage.set(`${PREAMBLE_STORAGE_KEY_PREFIX}${sessionID}`, acpSessionId),
+      )
+    } catch {}
   }
 
   private async ensureAcpSession(
@@ -1521,6 +1544,9 @@ export class SessionBridgeManager {
           })
         }
 
+        const deliveredPreambleId = freshSession
+          ? undefined
+          : await this.runPreambleDeliveredGet(s.sessionID)
         if (this.disposed) throw new PluginDisposedError()
         // Mode flipped (or session reset) while this start was in flight:
         // let the catch block dispose the stale proc without installing it.
@@ -1537,11 +1563,8 @@ export class SessionBridgeManager {
         }
         s.proc = proc
         s.acpSessionId = String(res.sessionId)
-        if (freshSession) {
-          s.pendingPreambleSessionId = s.acpSessionId
-        } else if (s.pendingPreambleSessionId !== s.acpSessionId) {
-          s.pendingPreambleSessionId = undefined
-        }
+        s.pendingPreambleSessionId =
+          freshSession || deliveredPreambleId !== s.acpSessionId ? s.acpSessionId : undefined
         s.acpToolsSignature = acpToolsSignatureFor(s)
         s.lastError = null
         // A warm-driven fresh *replacement* (a stored id existed but resume
@@ -2647,6 +2670,7 @@ export class SessionBridgeManager {
           throw err
         }
         let { proc, acpSessionId, freshSession } = ensured
+        if (freshSession) s.pendingFreshHandoff = true
         let ensuredGeneration = s.startGeneration
 
         // Apply model + thinking level target
@@ -2685,6 +2709,7 @@ export class SessionBridgeManager {
           proc = retry.proc
           acpSessionId = retry.acpSessionId
           freshSession = freshSession || retry.freshSession
+          if (retry.freshSession) s.pendingFreshHandoff = true
           ensuredGeneration = s.startGeneration
           await applyModelTarget()
           if (isStaleInstall()) {
@@ -2704,8 +2729,8 @@ export class SessionBridgeManager {
         const nonSystemTurnCount = options.prompt.filter((m) => m.role !== "system").length
         const hadPendingFresh = s.pendingFreshHandoff === true
         // A cancelled setup can leave a fresh session installed without its
-        // first prompt. On retry it still needs the same text-only handoff.
-        const hadFreshStart = freshSession || hadPendingFresh || s.pendingPreambleSessionId === acpSessionId
+        // first prompt. On retry pendingFreshHandoff still triggers the handoff.
+        const hadFreshStart = freshSession || hadPendingFresh
         if (hadPendingFresh && !freshSession) {
           // Warm-installed fresh session deferred its storage write: persist
           // on its first real turn.
@@ -2737,6 +2762,7 @@ export class SessionBridgeManager {
             s.pendingPreambleSessionId = undefined
             const preamble = bridge.readPreamble(s.sessionID, s.cwd)
             if (preamble !== undefined) promptBlocks.unshift({ type: "text", text: preamble })
+            void bridge.runPreambleDeliveredSet(s.sessionID, acpSessionId)
           }
           const pending = proc.prompt(acpSessionId, promptBlocks)
           // Track the in-flight prompt so a follow-up turn waits for a

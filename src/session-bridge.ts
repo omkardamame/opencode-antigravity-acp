@@ -1,3 +1,6 @@
+import { appendFileSync, closeSync, constants as fsConstants, fstatSync, openSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -33,6 +36,7 @@ import {
   isSyntheticRestartAfterError,
 } from "./history-sanitizer.js"
 import { McpRelayServer, type McpCallToolResult, type McpToolDescriptor } from "./mcp-relay.js"
+import { mapNativeTool } from "./native-tool-map.js"
 import {
   elicitationToQuestions,
   parseQuestionToolAnswers,
@@ -43,6 +47,33 @@ import {
 const OPENCODE_QUESTION_TOOL = "question"
 
 export type AcpMode = "auto" | "accept-edits" | "default" | "plan"
+
+const seenNativeToolPairs = new Set<string>()
+
+function logNativeTool(name: string, kind: string | undefined, rawInput: unknown, mappedTo: string): void {
+  if (process.env.ANTIGRAVITY_ACP_DEBUG_TOOLS !== "1") return
+  const key = JSON.stringify([name, kind])
+  if (seenNativeToolPairs.has(key)) return
+  seenNativeToolPairs.add(key)
+  try {
+    const entry = JSON.stringify({ name, kind: kind ?? null, rawInput, mappedTo },
+      (_key, value) => typeof value === "string" ? value.slice(0, 300) : value)
+    const file = process.env.ANTIGRAVITY_ACP_DEBUG_TOOLS_FILE || join(tmpdir(), "antigravity-acp-toolcalls.jsonl")
+    const fd = openSync(file,
+      fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT |
+        fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK, 0o600)
+    try {
+      const stat = fstatSync(fd)
+      if (stat.isFile() && stat.uid === process.getuid?.() && stat.nlink === 1 && (stat.mode & 0o077) === 0) {
+        appendFileSync(fd, `${entry}\n`)
+      }
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    // Diagnostics must not interrupt the tool stream.
+  }
+}
 
 class PluginDisposedError extends Error {
   constructor() {
@@ -2201,16 +2232,23 @@ export class SessionBridgeManager {
         if (kind !== "tool_call") return
 
         this.closeOpenBlocks(turn)
-        displayName = `acp_${name}`
-        turn.activeNativeTools.set(callId, displayName)
         const rawInput = update.rawInput ?? update.args ?? {}
-        const jsonInput = JSON.stringify(rawInput)
-        ;(turn.nativeToolText ??= new Map()).set(callId, `${name}\n${update.title ?? ""}\n${jsonInput}`)
+        const { toolName, input } = mapNativeTool(name, update.kind, rawInput)
+        displayName = toolName
+        turn.activeNativeTools.set(callId, displayName)
+        logNativeTool(name, update.kind, rawInput, displayName)
+        const jsonInput = JSON.stringify(
+          toolName === "bash" && typeof update.title === "string" && update.title.trim()
+            ? { description: update.title, ...(input as Record<string, unknown>) }
+            : input,
+        )
+        ;(turn.nativeToolText ??= new Map()).set(callId, `${name}\n${update.title ?? ""}\n${JSON.stringify(rawInput)}`)
         this.emitPart(turn, {
           type: "tool-input-start",
           id: callId,
           toolName: displayName,
           providerExecuted: true,
+          providerMetadata: { [ACP_PROVIDER_ID]: { acp: true } },
         })
         this.emitPart(turn, {
           type: "tool-input-delta",

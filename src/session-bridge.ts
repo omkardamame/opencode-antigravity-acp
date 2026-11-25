@@ -1,6 +1,3 @@
-import { appendFileSync, closeSync, constants as fsConstants, fstatSync, openSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -26,6 +23,7 @@ import {
   type AcpPromptResult,
   type AcpSessionUpdate,
 } from "./acp-client.js"
+import { logNativeTool } from "./debug-tools-log.js"
 import {
   ACP_PROVIDER_ID,
   API_ERROR_ABORT_PATTERN,
@@ -48,33 +46,6 @@ import {
 const OPENCODE_QUESTION_TOOL = "question"
 
 export type AcpMode = "auto" | "accept-edits" | "default" | "plan"
-
-const seenNativeToolPairs = new Set<string>()
-
-function logNativeTool(name: string, kind: string | undefined, rawInput: unknown, mappedTo: string): void {
-  if (process.env.ANTIGRAVITY_ACP_DEBUG_TOOLS !== "1") return
-  const key = JSON.stringify([name, kind])
-  if (seenNativeToolPairs.has(key)) return
-  seenNativeToolPairs.add(key)
-  try {
-    const entry = JSON.stringify({ name, kind: kind ?? null, rawInput, mappedTo },
-      (_key, value) => typeof value === "string" ? value.slice(0, 300) : value)
-    const file = process.env.ANTIGRAVITY_ACP_DEBUG_TOOLS_FILE || join(tmpdir(), "antigravity-acp-toolcalls.jsonl")
-    const fd = openSync(file,
-      fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT |
-        fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK, 0o600)
-    try {
-      const stat = fstatSync(fd)
-      if (stat.isFile() && stat.uid === process.getuid?.() && stat.nlink === 1 && (stat.mode & 0o077) === 0) {
-        appendFileSync(fd, `${entry}\n`)
-      }
-    } finally {
-      closeSync(fd)
-    }
-  } catch {
-    // Diagnostics must not interrupt the tool stream.
-  }
-}
 
 class PluginDisposedError extends Error {
   constructor() {

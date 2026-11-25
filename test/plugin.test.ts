@@ -248,7 +248,7 @@ describe("SessionBridgeManager native ACP tool results", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acp-tool-log-"))
     const file = path.join(dir, "calls.jsonl")
     process.env.ANTIGRAVITY_ACP_DEBUG_TOOLS_FILE = file
-    const rawInput = { sample: "x".repeat(350), short: "value" }
+    const rawInput = { sample: "x ".repeat(175), short: "value" }
     const updates = [
       { sessionUpdate: "tool_call", toolCallId: "a", name: "diagnostic_tool", kind: "other", rawInput },
       { sessionUpdate: "tool_call", toolCallId: "b", name: "diagnostic_tool", kind: "other", rawInput: { sample: "not first" } },
@@ -264,7 +264,7 @@ describe("SessionBridgeManager native ACP tool results", () => {
       await streamToolUpdates(updates)
       const lines = fs.readFileSync(file, "utf8").trimEnd().split("\n")
       expect(lines.map((line) => JSON.parse(line))).toEqual([
-        { name: "diagnostic_tool", kind: "other", rawInput: { ...rawInput, sample: "x".repeat(300) }, mappedTo: "acp_diagnostic_tool" },
+        { name: "diagnostic_tool", kind: "other", rawInput: { ...rawInput, sample: "x ".repeat(150) }, mappedTo: "acp_diagnostic_tool" },
         { name: "diagnostic_tool", kind: "execute", rawInput: { CommandLine: "pwd" }, mappedTo: "bash" },
       ])
       expect(fs.statSync(file).mode & 0o777).toBe(0o600)

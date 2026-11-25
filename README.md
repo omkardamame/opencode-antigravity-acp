@@ -160,9 +160,9 @@ The rendered text goes to the model, including any substituted values. Include o
 
 ## Debugging tool shapes
 
-Set `ANTIGRAVITY_ACP_DEBUG_TOOLS=1` to log native tool shapes as JSON Lines. The bridge attempts one write per exact `agy` name/kind pair per plugin process. The entry includes the raw input and display name, with individual strings truncated to 300 characters. Logging is off unless explicitly enabled; the output path alone does not enable it.
+Set `ANTIGRAVITY_ACP_DEBUG_TOOLS=1` to log native tool shapes as JSON Lines. The bridge attempts one write per exact `agy` name/kind pair per plugin process and prints one warning to stderr when logging is enabled. Logged values are redacted (home directory path → `~`, email addresses → `<email>`, and token-like strings → `<redacted>`) before individual strings are truncated to 300 characters. Logging is off unless explicitly enabled; the output path alone does not enable it.
 
-**Privacy:** The log can contain command and file snippets. Truncation is not redaction. Keep it private and review it before sharing any excerpt. The bridge skips files it cannot open safely.
+**Privacy:** Redaction is best-effort and the log can still contain command and file snippets. Keep it private and review it before sharing any excerpt. The bridge skips files it cannot open safely.
 
 ### Environment variables
 

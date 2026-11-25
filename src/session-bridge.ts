@@ -37,6 +37,7 @@ import {
 } from "./history-sanitizer.js"
 import { McpRelayServer, type McpCallToolResult, type McpToolDescriptor } from "./mcp-relay.js"
 import { mapNativeTool } from "./native-tool-map.js"
+import { readAcpPreamble } from "./preamble.js"
 import {
   elicitationToQuestions,
   parseQuestionToolAnswers,
@@ -201,6 +202,8 @@ interface BridgeSession {
    * Consumed by the next real turn, which restores context via text handoff.
    */
   pendingFreshHandoff?: boolean
+  /** Warming can create a session before its first prompt is dispatched. */
+  pendingPreambleSessionId?: string
   /**
    * Settles when the latest `proc.prompt()` so a follow-up turn can wait for a
    * cancelled prompt to settle server-side before sending a new prompt on
@@ -455,6 +458,7 @@ export class SessionBridgeManager {
    * unbounded idle `agy acp` children.
    */
   private warmedIdleSessions: string[] = []
+  private readonly readPreamble: typeof readAcpPreamble
 
   constructor(
     private readonly ctx: Plugin.Context,
@@ -465,12 +469,14 @@ export class SessionBridgeManager {
       readonly discoverModels?: (cwd: string) => Promise<readonly AcpDiscoveredModel[]>
       /** Injectable proc factory for tests; defaults to real `AcpProcess`. */
       readonly createProc?: (options: AcpProcessOptions) => AcpProcess
+      readonly readPreamble?: typeof readAcpPreamble
     },
   ) {
     this.onStateChanged = onStateChanged
     this.onCatalogChanged = options?.onCatalogChanged
     this.discoverModelsFn = options?.discoverModels ?? ((cwd) => discoverAcpModels(cwd))
     this.createProcFn = options?.createProc ?? ((opts) => new AcpProcess(opts))
+    this.readPreamble = options?.readPreamble ?? readAcpPreamble
     if (sharedCatalog && sharedCatalog.length > 0) {
       this.catalog = sharedCatalog
     }
@@ -1005,6 +1011,7 @@ export class SessionBridgeManager {
         s.lastModeApplied = undefined
         s.lastError = null
         s.pendingFreshHandoff = undefined
+        s.pendingPreambleSessionId = undefined
         s.settlingPrompt = undefined
         s.lastContextUsed = undefined
         this.untrackWarmedIdle(sessionID)
@@ -1099,6 +1106,7 @@ export class SessionBridgeManager {
         s.lastModeApplied = undefined
         s.lastError = null
         s.pendingFreshHandoff = undefined
+        s.pendingPreambleSessionId = undefined
         s.settlingPrompt = undefined
         s.lastContextUsed = undefined
         this.untrackWarmedIdle(sessionID)
@@ -1387,6 +1395,7 @@ export class SessionBridgeManager {
             const res = await proc.newSession({ cwd: s.cwd, mcpServers })
             if (!res?.sessionId) throw new Error("empty sessionId from refreshed ACP session")
             s.acpSessionId = String(res.sessionId)
+            s.pendingPreambleSessionId = s.acpSessionId
             s.acpToolsSignature = acpToolsSignatureFor(s)
             s.lastModelId = undefined
             s.lastModeApplied = undefined
@@ -1557,6 +1566,11 @@ export class SessionBridgeManager {
         }
         s.proc = proc
         s.acpSessionId = String(res.sessionId)
+        if (freshSession) {
+          s.pendingPreambleSessionId = s.acpSessionId
+        } else if (s.pendingPreambleSessionId !== s.acpSessionId) {
+          s.pendingPreambleSessionId = undefined
+        }
         s.acpToolsSignature = acpToolsSignatureFor(s)
         s.lastError = null
         // A warm-driven fresh *replacement* (a stored id existed but resume
@@ -2446,6 +2460,7 @@ export class SessionBridgeManager {
         }
       },
       async doStream(options: LanguageModelV3CallOptions) {
+        options.abortSignal?.throwIfAborted()
         if (bridge.disposed) {
           return {
             stream: bridge.createImmediateTextStream(
@@ -2717,13 +2732,15 @@ export class SessionBridgeManager {
         // in an earlier call, so this turn consumes the flag to restore history.
         const nonSystemTurnCount = options.prompt.filter((m) => m.role !== "system").length
         const hadPendingFresh = s.pendingFreshHandoff === true
-        const hadFreshStart = freshSession || hadPendingFresh
-        s.pendingFreshHandoff = undefined
+        // A cancelled setup can leave a fresh session installed without its
+        // first prompt. On retry it still needs the same text-only handoff.
+        const hadFreshStart = freshSession || hadPendingFresh || s.pendingPreambleSessionId === acpSessionId
         if (hadPendingFresh && !freshSession) {
           // Warm-installed fresh session deferred its storage write: persist
-          // now that the first real turn consumed the handoff flag.
+          // on its first real turn.
           await bridge.runStorageSet(sessionID, acpSessionId)
         }
+        options.abortSignal?.throwIfAborted()
         const promptBlocks =
           needsHandoff || (hadFreshStart && nonSystemTurnCount > 1)
             ? buildTextOnlyHandoffPromptBlocks(options.prompt, { maxChars: 16_000 })
@@ -2743,6 +2760,13 @@ export class SessionBridgeManager {
         bridge.notifyChanged(sessionID)
 
         const stream = bridge.createBoundStream(s, turn, options.abortSignal, () => {
+          if (options.abortSignal?.aborted) return
+          s.pendingFreshHandoff = undefined
+          if (s.pendingPreambleSessionId === acpSessionId) {
+            s.pendingPreambleSessionId = undefined
+            const preamble = bridge.readPreamble(s.sessionID, s.cwd)
+            if (preamble !== undefined) promptBlocks.unshift({ type: "text", text: preamble })
+          }
           const pending = proc.prompt(acpSessionId, promptBlocks)
           // Track the in-flight prompt so a follow-up turn waits for a
           // cancelled prompt to settle server-side before sending a new one

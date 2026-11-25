@@ -40,11 +40,13 @@ const bridgeEnv = [
   "ANTIGRAVITY_ACP_NATIVE_TOOLS",
   "ANTIGRAVITY_ACP_DEBUG_TOOLS",
   "ANTIGRAVITY_ACP_DEBUG_TOOLS_FILE",
+  "ANTIGRAVITY_ACP_PREAMBLE",
 ] as const
 let previousBridgeEnv: (string | undefined)[]
 beforeEach(() => {
   previousBridgeEnv = bridgeEnv.map((key) => process.env[key])
   for (const key of bridgeEnv) delete process.env[key]
+  process.env.ANTIGRAVITY_ACP_PREAMBLE = "off"
 })
 afterEach(() => {
   for (const [index, key] of bridgeEnv.entries()) {

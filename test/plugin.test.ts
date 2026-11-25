@@ -296,7 +296,7 @@ describe("SessionBridgeManager native ACP tool results", () => {
 
   test("marks an unfinished tool as unknown with its original name when the turn ends", async () => {
     const parts = await streamToolUpdates([
-      { sessionUpdate: "tool_call", toolCallId: "run", name: "run_command", status: "pending" },
+      { sessionUpdate: "tool_call", toolCallId: "run", name: "run_command", status: "pending", rawInput: { CommandLine: "pwd" } },
       { sessionUpdate: "tool_call_update", toolCallId: "run", status: "in_progress", kind: "execute" },
     ])
 
@@ -313,7 +313,7 @@ describe("SessionBridgeManager native ACP tool results", () => {
 
   test("uses the result when the initial tool call already reports a terminal status", async () => {
     const parts = await streamToolUpdates([
-      { sessionUpdate: "tool_call", toolCallId: "read", kind: "read", status: "completed", rawOutput: "file text" },
+      { sessionUpdate: "tool_call", toolCallId: "read", kind: "read", status: "completed", rawInput: { Path: "/repo/a" }, rawOutput: "file text" },
     ])
 
     const results = parts.filter((p) => p.type === "tool-result")
@@ -386,6 +386,7 @@ describe("SessionBridgeManager lifecycle & cached discovery", () => {
       toolCallId: "native-1",
       name: "run_command",
       status: "in_progress",
+      rawInput: { CommandLine: "pwd" },
     })
 
     const streamReaderPromise = readAllParts(activeStream)

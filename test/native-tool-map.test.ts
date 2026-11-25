@@ -84,13 +84,13 @@ test("complete required fields omit raw input even with extra or partial optiona
   expect(mapNativeTool("write_to_file", "edit", { Path: "/repo/a", extra: 1 }).input).toEqual({ filePath: "/repo/a" })
 })
 
-test("missing required fields retain raw input", () => {
+test("missing required fields fall back to acp_<name> with raw input unchanged", () => {
   const command = { WaitMsBeforeAsync: 1_000, toolSummary: "Print directory" }
   const edit = { Path: "/repo/a", Target: "before" }
   const search = { Query: "example" }
-  expect(mapNativeTool("run_command", "execute", command).input).toEqual({ description: "Print directory", raw: command })
-  expect(mapNativeTool("edit_file", "edit", edit).input).toEqual({ filePath: "/repo/a", oldString: "before", raw: edit })
-  expect(mapNativeTool("search_web", "fetch", search).input).toEqual({ raw: search })
+  expect(mapNativeTool("run_command", "execute", command)).toEqual({ toolName: "acp_run_command", input: command })
+  expect(mapNativeTool("edit_file", "edit", edit)).toEqual({ toolName: "acp_edit_file", input: edit })
+  expect(mapNativeTool("search_web", "fetch", search)).toEqual({ toolName: "acp_search_web", input: search })
 })
 
 test("unknown tool preserves original spelling and input identity", () => {

@@ -115,7 +115,6 @@ export function mapNativeTool(name: string, kind: string | undefined, rawInput: 
   const chunks = mapping.firstChunk && args.array(...mapping.firstChunk)
   const replacement = chunks?.length ? fields(chunks[0]) : args
   const input: Record<string, unknown> = {}
-  let keepRaw = false
   for (const [key, spec] of Object.entries(mapping.fields)) {
     const source = spec.fromChunk ? replacement : args
     let value = spec.number ? source.number(...spec.aliases) : source.string(...spec.aliases)
@@ -125,9 +124,8 @@ export function mapNativeTool(name: string, kind: string | undefined, rawInput: 
         ? value - start : undefined
     }
     if (value !== undefined) input[key] = value
-    else if (spec.required) keepRaw = true
+    else if (spec.required) return legacy
   }
 
-  if (keepRaw) input.raw = rawInput
   return { toolName: mapping.toolName, input }
 }

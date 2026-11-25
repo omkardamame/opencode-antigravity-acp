@@ -143,7 +143,7 @@ Known `agy` tool calls show as native OpenCode cards by default. Only the displa
 | `list_dir` | — | `list` | `DirectoryPath` → `path` |
 | `read_url_content`, `search_web` | `fetch` | `webfetch` | `Url` → `url` |
 
-Names take precedence over fallback kinds. Multi-edit cards map the first replacement chunk. If any required field is missing, the original input (including any other chunks) is kept under `raw`. Execution is unchanged.
+Names take precedence over fallback kinds. Multi-edit cards map the first replacement chunk. If any required field is missing, the call falls back to `acp_<name>` with the raw input unchanged. Execution is unchanged.
 
 ### Add support for another agy tool
 
